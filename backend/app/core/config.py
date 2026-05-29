@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # 请求超时（秒）
     http_timeout: float = 30.0
 
+    # CORS：允许的前端来源正则（默认放行 localhost / 127.0.0.1 的任意端口）
+    cors_origin_regex: str = r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+
     model_config = SettingsConfigDict(
         # 优先读取仓库根目录与 backend 目录下的 .env
         env_file=(".env", "../.env"),

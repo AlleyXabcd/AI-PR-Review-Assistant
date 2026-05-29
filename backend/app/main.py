@@ -13,13 +13,10 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# 开发期允许本地前端跨域访问
+# 开发期允许本地前端跨域访问（默认放行 localhost / 127.0.0.1 任意端口）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origin_regex=get_settings().cors_origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
 )
