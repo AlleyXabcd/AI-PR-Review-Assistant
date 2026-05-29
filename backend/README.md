@@ -11,8 +11,10 @@ FastAPI 服务 + 分析核心。负责：
 
 - `app/core/config.py`：基于 pydantic-settings 的配置（读取 .env）
 - `app/models/github.py`：PR 数据模型（PRRef / PRFile / PRCommit / PullRequest）
+- `app/models/llm.py`：LLM 数据模型（ChatMessage / LLMResponse / TokenUsage）
 - `app/services/github_client.py`：PR URL 解析 + GitHub REST 抓取（含分页、错误处理）
-- `app/scripts/fetch_pr.py`：手动验证脚本
+- `app/services/deepseek_client.py`：DeepSeek 客户端（chat=V3 / reason=R1，含重试）
+- `app/scripts/`：手动验证脚本（fetch_pr / try_deepseek）
 
 ## 目录结构
 
@@ -40,4 +42,8 @@ python -m pytest -q
 
 # 手动抓取一个 PR（公开仓库无需 token；私有仓库需在 .env 配置 GITHUB_TOKEN）
 python -m app.scripts.fetch_pr https://github.com/octocat/Hello-World/pull/1
+
+# 调一次 DeepSeek（需在 .env 配置 DEEPSEEK_API_KEY）
+python -m app.scripts.try_deepseek            # deepseek-chat (V3)
+python -m app.scripts.try_deepseek --reason   # deepseek-reasoner (R1)
 ```
