@@ -14,6 +14,11 @@ FastAPI 服务 + 分析核心。负责：
 - `app/models/llm.py`：LLM 数据模型（ChatMessage / LLMResponse / TokenUsage）
 - `app/services/github_client.py`：PR URL 解析 + GitHub REST 抓取（含分页、错误处理）
 - `app/services/deepseek_client.py`：DeepSeek 客户端（chat=V3 / reason=R1，含重试）
+- `app/services/prompts.py`：prompt 模板与 diff 渲染
+- `app/services/json_utils.py`：从模型输出稳健提取 JSON
+- `app/services/summary_service.py`：变更总结编排（抓取→prompt→V3→解析）
+- `app/api/review.py`：`POST /review/summary` 路由
+- `app/main.py`：FastAPI 入口（含 /health 与 CORS）
 - `app/scripts/`：手动验证脚本（fetch_pr / try_deepseek）
 
 ## 目录结构
@@ -47,3 +52,20 @@ python -m app.scripts.fetch_pr https://github.com/octocat/Hello-World/pull/1
 python -m app.scripts.try_deepseek            # deepseek-chat (V3)
 python -m app.scripts.try_deepseek --reason   # deepseek-reasoner (R1)
 ```
+
+## 运行服务
+
+```bash
+cd backend
+.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
+
+# 健康检查
+curl http://127.0.0.1:8000/health
+
+# 变更总结（需配置 DEEPSEEK_API_KEY；公开仓库无需 GITHUB_TOKEN）
+curl -X POST http://127.0.0.1:8000/review/summary \
+  -H "Content-Type: application/json" \
+  -d '{"pr_url":"https://github.com/octocat/Hello-World/pull/1"}'
+```
+
+接口文档：启动后访问 http://127.0.0.1:8000/docs
