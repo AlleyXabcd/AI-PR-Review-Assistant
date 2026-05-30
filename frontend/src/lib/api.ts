@@ -32,6 +32,47 @@ export function fetchRisks(prUrl: string): Promise<RisksResponse> {
   return postReview<RisksResponse>("/review/risks", prUrl);
 }
 
+export interface WritebackResponse {
+  posted: boolean;
+  dry_run: boolean;
+  body: string;
+  comment_url: string;
+  model: string;
+}
+
+/** 调用 /review/writeback；dry_run=true 只取预览正文，false 真正发评论到 GitHub PR。 */
+async function callWriteback(
+  prUrl: string,
+  dryRun: boolean,
+): Promise<WritebackResponse> {
+  const res = await fetch(`${API_BASE}/review/writeback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pr_url: prUrl, dry_run: dryRun }),
+  });
+
+  if (!res.ok) {
+    let detail = `请求失败 (${res.status})`;
+    try {
+      const data = await res.json();
+      if (data?.detail) detail = data.detail;
+    } catch {
+      // 忽略非 JSON 错误体
+    }
+    throw new Error(detail);
+  }
+
+  return res.json();
+}
+
+export function previewWriteback(prUrl: string): Promise<WritebackResponse> {
+  return callWriteback(prUrl, true);
+}
+
+export function postWriteback(prUrl: string): Promise<WritebackResponse> {
+  return callWriteback(prUrl, false);
+}
+
 export interface StreamHandlers {
   onStage?: (message: string) => void;
   onSummaryDelta?: (text: string) => void;

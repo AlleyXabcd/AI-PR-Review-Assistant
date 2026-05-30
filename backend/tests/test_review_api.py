@@ -67,6 +67,31 @@ def client(monkeypatch):
     return TestClient(app)
 
 
+class _FakeWritebackService:
+    def __init__(self, posted=False):
+        self._posted = posted
+
+    async def build(self, ref, *, dry_run=True):
+        from app.models.review import WritebackResponse
+
+        return WritebackResponse(
+            posted=not dry_run,
+            dry_run=dry_run,
+            body="## 🤖 AI PR Review 助手\n预览正文",
+            comment_url="" if dry_run else "https://github.com/o/r/pull/1#issuecomment-1",
+            model="deepseek-chat",
+        )
+
+
+@pytest.fixture
+def writeback_client(monkeypatch):
+    monkeypatch.setattr(
+        review_module, "WritebackService", lambda **kw: _FakeWritebackService()
+    )
+    monkeypatch.setattr(review_module, "get_cache", lambda: None)
+    return TestClient(app)
+
+
 def test_health():
     c = TestClient(app)
     r = c.get("/health")
@@ -103,4 +128,31 @@ def test_risks_ok(client):
 
 def test_risks_bad_url(client):
     r = client.post("/review/risks", json={"pr_url": "not-a-url"})
+    assert r.status_code == 400
+
+
+def test_writeback_dry_run_default(writeback_client):
+    # 不传 dry_run 时默认预览，不发送
+    r = writeback_client.post("/review/writeback", json={"pr_url": "o/r#1"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["dry_run"] is True
+    assert data["posted"] is False
+    assert data["comment_url"] == ""
+    assert "AI PR Review" in data["body"]
+
+
+def test_writeback_real_post(writeback_client):
+    r = writeback_client.post(
+        "/review/writeback", json={"pr_url": "o/r#1", "dry_run": False}
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["posted"] is True
+    assert data["dry_run"] is False
+    assert data["comment_url"].endswith("#issuecomment-1")
+
+
+def test_writeback_bad_url(writeback_client):
+    r = writeback_client.post("/review/writeback", json={"pr_url": "not-a-url"})
     assert r.status_code == 400

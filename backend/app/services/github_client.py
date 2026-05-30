@@ -114,6 +114,40 @@ class GitHubClient:
             commits=commits,
         )
 
+    async def post_issue_comment(self, ref: PRRef, body: str) -> str:
+        """在 PR 的评论区发布一条评论，返回评论页面地址（html_url）。
+
+        PR 在 GitHub 数据模型中属于 issue，故走 issues/{n}/comments 接口。
+        需要 token 对目标仓库具备写权限，否则 403。
+        """
+        base = self._settings.github_api_base.rstrip("/")
+        path = f"/repos/{ref.owner}/{ref.repo}/issues/{ref.number}/comments"
+
+        async with httpx.AsyncClient(
+            base_url=base,
+            headers=self._headers(),
+            timeout=self._settings.http_timeout,
+        ) as client:
+            try:
+                resp = await client.post(path, json={"body": body})
+            except httpx.HTTPError as exc:
+                raise GitHubError(f"GitHub 评论发送失败：{exc}") from exc
+
+        if resp.status_code == 401:
+            raise GitHubError("GitHub 鉴权失败，请检查 GITHUB_TOKEN（401）")
+        if resp.status_code == 403:
+            raise GitHubError(
+                "GitHub 拒绝写入评论，token 可能缺少该仓库的写权限（403）"
+            )
+        if resp.status_code == 404:
+            raise GitHubError("PR 不存在或 token 无访问权限（404）")
+        if resp.status_code >= 400:
+            raise GitHubError(
+                f"GitHub 评论发送失败：{resp.status_code} {resp.text[:200]}"
+            )
+
+        return resp.json().get("html_url", "")
+
     async def fetch_file_contents(
         self, ref: PRRef, paths: list[str], sha: str
     ) -> list[FileContext]:

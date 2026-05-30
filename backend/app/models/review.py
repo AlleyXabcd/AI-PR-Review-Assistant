@@ -33,6 +33,28 @@ class RiskRequest(BaseModel):
     pr_url: str = Field(..., description="GitHub PR 地址或 owner/repo#number 简写")
 
 
+class WritebackRequest(BaseModel):
+    """评论回写请求。
+
+    dry_run=True（默认）只返回将要发送的评论预览，不调用 GitHub 写接口；
+    前端确认后再以 dry_run=False 真正发送。
+    """
+
+    pr_url: str = Field(..., description="GitHub PR 地址或 owner/repo#number 简写")
+    dry_run: bool = Field(True, description="为 True 时只预览不发送")
+
+
+class WritebackResponse(BaseModel):
+    """评论回写响应。"""
+
+    posted: bool = Field(False, description="是否已真正发送到 GitHub")
+    dry_run: bool = Field(True, description="本次是否为预览模式")
+    body: str = Field("", description="评论 Markdown 正文（预览或已发送内容）")
+    comment_url: str = Field("", description="已发送评论的 API/页面地址，预览时为空")
+    model: str = Field("", description="生成分析所用模型")
+
+
+
 class FileChange(BaseModel):
     """返回给前端的文件变更信息（含 unified diff 片段，供前端高亮）。"""
 
