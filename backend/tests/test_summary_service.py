@@ -67,6 +67,8 @@ async def test_summarize_parses_structured_json():
     assert resp.summary.impact == "需关注缓存失效"
     assert resp.changed_files == 2
     assert len(resp.files) == 2
+    # patch 片段透传给前端用于 diff 高亮
+    assert resp.files[0].patch == "@@ +new"
     assert resp.usage.total_tokens == 150
 
 

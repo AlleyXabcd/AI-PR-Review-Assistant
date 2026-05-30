@@ -1,10 +1,10 @@
-import type { SummaryResponse } from "./types";
+import type { RisksResponse, SummaryResponse } from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
-export async function fetchSummary(prUrl: string): Promise<SummaryResponse> {
-  const res = await fetch(`${API_BASE}/review/summary`, {
+async function postReview<T>(path: string, prUrl: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pr_url: prUrl }),
@@ -22,4 +22,12 @@ export async function fetchSummary(prUrl: string): Promise<SummaryResponse> {
   }
 
   return res.json();
+}
+
+export function fetchSummary(prUrl: string): Promise<SummaryResponse> {
+  return postReview<SummaryResponse>("/review/summary", prUrl);
+}
+
+export function fetchRisks(prUrl: string): Promise<RisksResponse> {
+  return postReview<RisksResponse>("/review/risks", prUrl);
 }

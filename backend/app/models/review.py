@@ -34,12 +34,14 @@ class RiskRequest(BaseModel):
 
 
 class FileChange(BaseModel):
-    """返回给前端的精简文件变更信息（不含 diff 正文）。"""
+    """返回给前端的文件变更信息（含 unified diff 片段，供前端高亮）。"""
 
     filename: str
     status: str
     additions: int = 0
     deletions: int = 0
+    # GitHub 返回的该文件 unified diff 片段（二进制/超大文件可能为空）
+    patch: str | None = None
 
 
 class PRSummary(BaseModel):
@@ -117,6 +119,7 @@ def to_file_changes(files: list[PRFile]) -> list[FileChange]:
             status=f.status,
             additions=f.additions,
             deletions=f.deletions,
+            patch=f.patch,
         )
         for f in files
     ]

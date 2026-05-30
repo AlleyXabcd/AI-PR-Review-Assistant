@@ -1,25 +1,30 @@
 "use client";
 
 import { useState } from "react";
-import { fetchSummary } from "@/lib/api";
-import type { SummaryResponse } from "@/lib/types";
+import { fetchRisks, fetchSummary } from "@/lib/api";
+import type { RisksResponse, SummaryResponse } from "@/lib/types";
 import { SummaryView } from "@/components/SummaryView";
+import { DiffView } from "@/components/DiffView";
 
 export default function Home() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<SummaryResponse | null>(null);
+  const [summary, setSummary] = useState<SummaryResponse | null>(null);
+  const [risks, setRisks] = useState<RisksResponse | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!url.trim() || loading) return;
     setLoading(true);
     setError(null);
-    setResult(null);
+    setSummary(null);
+    setRisks(null);
+    const pr = url.trim();
     try {
-      const data = await fetchSummary(url.trim());
-      setResult(data);
+      const [s, r] = await Promise.all([fetchSummary(pr), fetchRisks(pr)]);
+      setSummary(s);
+      setRisks(r);
     } catch (err) {
       setError(err instanceof Error ? err.message : "未知错误");
     } finally {
@@ -32,7 +37,7 @@ export default function Home() {
       <header className="mb-8">
         <h1 className="text-2xl font-semibold">AI PR Review 助手</h1>
         <p className="mt-1 text-sm text-neutral-400">
-          粘贴一个 GitHub PR 地址，自动获取变更并由 AI 生成总结。
+          粘贴一个 GitHub PR 地址，自动获取变更并由 AI 生成总结、识别风险代码。
         </p>
       </header>
 
@@ -65,10 +70,19 @@ export default function Home() {
         </div>
       )}
 
-      {result && (
+      {summary && (
         <div className="mt-8">
-          <SummaryView data={result} />
+          <SummaryView data={summary} />
         </div>
+      )}
+
+      {risks && summary && (
+        <section className="mt-8">
+          <h2 className="mb-3 text-lg font-semibold">
+            代码变更与风险（{risks.risks.length} 个风险点）
+          </h2>
+          <DiffView files={summary.files} risks={risks.risks} />
+        </section>
       )}
     </main>
   );
