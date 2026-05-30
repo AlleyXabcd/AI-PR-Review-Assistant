@@ -2,6 +2,7 @@ import pytest
 
 from app.models.github import FileContext, PRCommit, PRFile, PRRef, PullRequest
 from app.models.llm import LLMResponse, TokenUsage
+from app.services.cache import AnalysisCache
 from app.services.risk_service import RiskService
 
 
@@ -28,8 +29,10 @@ class _FakeDeepSeek:
         self.last_messages = None
         self.reason_messages = None
         self.reason_called = False
+        self.chat_calls = 0
 
     async def chat(self, messages, *, temperature=0.2, max_tokens=None):
+        self.chat_calls += 1
         self.last_messages = messages
         return LLMResponse(
             content=self._content,
@@ -309,5 +312,44 @@ async def test_review_prompt_includes_high_risks_only():
     assert "SQL 注入" in review_prompt
     # 非高危风险不进入复查 prompt
     assert "命名不清" not in review_prompt
+
+
+# ---- 缓存：以 head_sha 为版本标识 ----
+
+
+async def test_detect_second_call_hits_cache(tmp_path):
+    pr = _sample_pr()
+    cache = AnalysisCache(str(tmp_path / "c.db"))
+    content = (
+        '{"risks": [{"file": "auth.py", "line": 12, "severity": "medium", '
+        '"category": "security", "title": "SQL 注入", "confidence": 0.9}]}'
+    )
+    deepseek = _FakeDeepSeek(content)
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek, cache=cache)
+
+    first = await svc.detect(pr.ref)
+    second = await svc.detect(pr.ref)
+
+    # 第二次命中缓存，不再调用模型
+    assert deepseek.chat_calls == 1
+    assert first.cached is False
+    assert second.cached is True
+    assert len(second.risks) == 1
+    assert second.risks[0].title == "SQL 注入"
+
+
+async def test_detect_cache_miss_on_head_sha_change(tmp_path):
+    pr = _sample_pr()
+    cache = AnalysisCache(str(tmp_path / "c.db"))
+    deepseek = _FakeDeepSeek('{"risks": []}')
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek, cache=cache)
+
+    await svc.detect(pr.ref)
+    pr.head_sha = "h2"
+    resp = await svc.detect(pr.ref)
+
+    # head_sha 变化后旧缓存不命中，重新分析
+    assert deepseek.chat_calls == 2
+    assert resp.cached is False
 
 

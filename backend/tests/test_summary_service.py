@@ -2,6 +2,7 @@ import pytest
 
 from app.models.github import PRCommit, PRFile, PRRef, PullRequest
 from app.models.llm import LLMResponse, TokenUsage
+from app.services.cache import AnalysisCache
 from app.services.summary_service import SummaryService
 
 
@@ -17,8 +18,10 @@ class _FakeDeepSeek:
     def __init__(self, content: str):
         self._content = content
         self.last_messages = None
+        self.chat_calls = 0
 
     async def chat(self, messages, *, temperature=0.2, max_tokens=None):
+        self.chat_calls += 1
         self.last_messages = messages
         return LLMResponse(
             content=self._content,
@@ -80,3 +83,49 @@ async def test_summarize_falls_back_on_bad_json():
 
     assert resp.summary.overview == "纯文本无 JSON"
     assert resp.summary.key_changes == []
+
+
+_GOOD_JSON = '{"overview": "引入缓存层", "key_changes": ["新增 cache.py"], "impact": ""}'
+
+
+async def test_second_call_hits_cache_without_calling_model(tmp_path):
+    pr = _sample_pr()
+    cache = AnalysisCache(str(tmp_path / "c.db"))
+    deepseek = _FakeDeepSeek(_GOOD_JSON)
+    svc = SummaryService(github=_FakeGitHub(pr), deepseek=deepseek, cache=cache)
+
+    first = await svc.summarize(pr.ref)
+    second = await svc.summarize(pr.ref)
+
+    # 第一次未命中需调用模型，第二次命中缓存不再调用
+    assert deepseek.chat_calls == 1
+    assert first.cached is False
+    assert second.cached is True
+    assert second.summary.overview == "引入缓存层"
+
+
+async def test_cache_miss_when_head_sha_changes(tmp_path):
+    pr = _sample_pr()
+    cache = AnalysisCache(str(tmp_path / "c.db"))
+    deepseek = _FakeDeepSeek(_GOOD_JSON)
+    svc = SummaryService(github=_FakeGitHub(pr), deepseek=deepseek, cache=cache)
+
+    await svc.summarize(pr.ref)
+    # PR 代码变化 → head_sha 变化 → 旧缓存不命中，需重新分析
+    pr.head_sha = "h2"
+    resp = await svc.summarize(pr.ref)
+
+    assert deepseek.chat_calls == 2
+    assert resp.cached is False
+
+
+async def test_no_cache_means_always_calls_model(tmp_path):
+    pr = _sample_pr()
+    deepseek = _FakeDeepSeek(_GOOD_JSON)
+    svc = SummaryService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    await svc.summarize(pr.ref)
+    await svc.summarize(pr.ref)
+
+    # 未注入缓存（如配置关闭）时每次都调用模型
+    assert deepseek.chat_calls == 2

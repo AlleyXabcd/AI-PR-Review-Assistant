@@ -74,6 +74,8 @@ class SummaryResponse(BaseModel):
     summary: PRSummary
     model: str = ""
     usage: TokenUsage = Field(default_factory=TokenUsage)
+    # 命中缓存时为 True（不重新调用模型，直接返回历史分析结果）
+    cached: bool = False
 
 
 class RiskItem(BaseModel):
@@ -110,6 +112,8 @@ class RisksResponse(BaseModel):
     risks: list[RiskItem] = Field(default_factory=list)
     model: str = ""
     usage: TokenUsage = Field(default_factory=TokenUsage)
+    # 命中缓存时为 True（不重新调用模型，直接返回历史分析结果）
+    cached: bool = False
 
 
 def to_file_changes(files: list[PRFile]) -> list[FileChange]:
