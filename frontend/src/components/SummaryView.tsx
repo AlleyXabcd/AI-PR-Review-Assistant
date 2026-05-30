@@ -36,7 +36,17 @@ export function SummaryView({ data }: { data: SummaryResponse }) {
     <div className="space-y-6">
       <section className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-5">
         <div className="flex items-start justify-between gap-4">
-          <h2 className="text-lg font-semibold">{data.title}</h2>
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            {data.title}
+            {data.cached && (
+              <span
+                title="结果来自缓存，未重新调用模型"
+                className="shrink-0 rounded-full border border-emerald-700 bg-emerald-950/50 px-2 py-0.5 text-xs font-normal text-emerald-300"
+              >
+                缓存命中
+              </span>
+            )}
+          </h2>
           <a
             href={data.html_url}
             target="_blank"

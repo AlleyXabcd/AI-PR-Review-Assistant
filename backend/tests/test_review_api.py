@@ -61,8 +61,9 @@ class _FakeRiskService:
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(review_module, "SummaryService", lambda: _FakeService())
-    monkeypatch.setattr(review_module, "RiskService", lambda: _FakeRiskService())
+    monkeypatch.setattr(review_module, "SummaryService", lambda **kw: _FakeService())
+    monkeypatch.setattr(review_module, "RiskService", lambda **kw: _FakeRiskService())
+    monkeypatch.setattr(review_module, "get_cache", lambda: None)
     return TestClient(app)
 
 

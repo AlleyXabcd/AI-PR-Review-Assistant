@@ -40,6 +40,7 @@ export interface SummaryResponse {
   summary: PRSummary;
   model: string;
   usage: TokenUsage;
+  cached?: boolean;
 }
 
 export type RiskSeverity = "high" | "medium" | "low";
@@ -74,4 +75,5 @@ export interface RisksResponse {
   risks: RiskItem[];
   model: string;
   usage: TokenUsage;
+  cached?: boolean;
 }

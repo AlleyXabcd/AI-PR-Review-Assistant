@@ -9,6 +9,7 @@ from app.models.review import (
     SummaryRequest,
     SummaryResponse,
 )
+from app.services.cache import get_cache
 from app.services.deepseek_client import DeepSeekError
 from app.services.github_client import GitHubError, parse_pr_url
 from app.services.risk_service import RiskService
@@ -25,7 +26,7 @@ async def create_summary(req: SummaryRequest) -> SummaryResponse:
     except GitHubError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    service = SummaryService()
+    service = SummaryService(cache=get_cache())
     try:
         return await service.summarize(ref)
     except GitHubError as exc:
@@ -42,7 +43,7 @@ async def detect_risks(req: RiskRequest) -> RisksResponse:
     except GitHubError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    service = RiskService()
+    service = RiskService(cache=get_cache())
     try:
         return await service.detect(ref)
     except GitHubError as exc:
