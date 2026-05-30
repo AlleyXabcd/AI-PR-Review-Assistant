@@ -3,6 +3,7 @@ import pytest
 from app.models.github import PRCommit, PRFile, PRRef, PullRequest
 from app.models.llm import LLMResponse, TokenUsage
 from app.services.cache import AnalysisCache
+from app.services.deepseek_client import ChatStreamChunk
 from app.services.summary_service import SummaryService
 
 
@@ -15,16 +16,32 @@ class _FakeGitHub:
 
 
 class _FakeDeepSeek:
-    def __init__(self, content: str):
+    def __init__(self, content: str, *, stream_pieces: list[str] | None = None):
         self._content = content
+        self._stream_pieces = stream_pieces
         self.last_messages = None
         self.chat_calls = 0
+        self.stream_calls = 0
 
     async def chat(self, messages, *, temperature=0.2, max_tokens=None):
         self.chat_calls += 1
         self.last_messages = messages
         return LLMResponse(
             content=self._content,
+            model="deepseek-chat",
+            usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+        )
+
+    async def chat_stream(self, messages, *, temperature=0.2, max_tokens=None):
+        self.stream_calls += 1
+        self.last_messages = messages
+        pieces = self._stream_pieces
+        if pieces is None:
+            pieces = [self._content]
+        for p in pieces:
+            yield ChatStreamChunk(delta=p)
+        yield ChatStreamChunk(
+            done=True,
             model="deepseek-chat",
             usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
         )
@@ -53,12 +70,12 @@ def _sample_pr() -> PullRequest:
     )
 
 
-async def test_summarize_parses_structured_json():
+async def test_summarize_parses_two_part_format():
     pr = _sample_pr()
     content = (
-        '{"overview": "引入缓存层", '
-        '"key_changes": ["新增 cache.py", "改造 app.py"], '
-        '"impact": "需关注缓存失效"}'
+        "引入缓存层\n"
+        "===META===\n"
+        '{"key_changes": ["新增 cache.py", "改造 app.py"], "impact": "需关注缓存失效"}'
     )
     svc = SummaryService(github=_FakeGitHub(pr), deepseek=_FakeDeepSeek(content))
 
@@ -75,6 +92,18 @@ async def test_summarize_parses_structured_json():
     assert resp.usage.total_tokens == 150
 
 
+async def test_summarize_legacy_single_json_still_parsed():
+    pr = _sample_pr()
+    # 兼容旧的单 JSON 格式（无分隔标记）
+    content = '{"overview": "旧格式概述", "key_changes": ["要点"], "impact": "影响"}'
+    svc = SummaryService(github=_FakeGitHub(pr), deepseek=_FakeDeepSeek(content))
+
+    resp = await svc.summarize(pr.ref)
+
+    assert resp.summary.overview == "旧格式概述"
+    assert resp.summary.key_changes == ["要点"]
+
+
 async def test_summarize_falls_back_on_bad_json():
     pr = _sample_pr()
     svc = SummaryService(github=_FakeGitHub(pr), deepseek=_FakeDeepSeek("纯文本无 JSON"))
@@ -85,7 +114,8 @@ async def test_summarize_falls_back_on_bad_json():
     assert resp.summary.key_changes == []
 
 
-_GOOD_JSON = '{"overview": "引入缓存层", "key_changes": ["新增 cache.py"], "impact": ""}'
+_TWO_PART = "引入缓存层\n===META===\n{\"key_changes\": [\"新增 cache.py\"], \"impact\": \"\"}"
+_GOOD_JSON = _TWO_PART
 
 
 async def test_second_call_hits_cache_without_calling_model(tmp_path):
@@ -129,3 +159,65 @@ async def test_no_cache_means_always_calls_model(tmp_path):
 
     # 未注入缓存（如配置关闭）时每次都调用模型
     assert deepseek.chat_calls == 2
+
+
+# ---- 流式总结：逐字产出概述正文，结束产出完整结果 ----
+
+
+async def _collect(gen):
+    return [c async for c in gen]
+
+
+async def test_summarize_stream_emits_overview_deltas_then_result():
+    pr = _sample_pr()
+    # 概述正文分多片到达，随后是分隔标记与元信息 JSON
+    pieces = ["引入", "缓存层", "\n===META===\n", '{"key_changes": ["要点"], "impact": "x"}']
+    deepseek = _FakeDeepSeek("", stream_pieces=pieces)
+    svc = SummaryService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    chunks = await _collect(svc.summarize_stream(pr.ref))
+
+    deltas = "".join(c.delta for c in chunks if c.delta)
+    # 概述正文逐字拼接出来，分隔标记及之后不外显
+    assert deltas == "引入缓存层"
+    assert "===META===" not in deltas
+    # 最后一个 chunk 带完整结果
+    result = chunks[-1].result
+    assert result is not None
+    assert result.summary.overview == "引入缓存层"
+    assert result.summary.key_changes == ["要点"]
+    assert result.summary.impact == "x"
+    assert result.cached is False
+
+
+async def test_summarize_stream_marker_split_across_chunks():
+    pr = _sample_pr()
+    # 分隔标记被拆在两片里，验证不会外显半截标记
+    pieces = ["正文===ME", "TA===\n{\"key_changes\": [], \"impact\": \"\"}"]
+    deepseek = _FakeDeepSeek("", stream_pieces=pieces)
+    svc = SummaryService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    chunks = await _collect(svc.summarize_stream(pr.ref))
+    deltas = "".join(c.delta for c in chunks if c.delta)
+
+    assert deltas == "正文"
+    assert "ME" not in deltas  # 半截标记没漏出去
+
+
+async def test_summarize_stream_cache_hit_skips_streaming(tmp_path):
+    pr = _sample_pr()
+    cache = AnalysisCache(str(tmp_path / "c.db"))
+    deepseek = _FakeDeepSeek("", stream_pieces=["引入", "缓存层", "\n===META===\n{}"])
+    svc = SummaryService(github=_FakeGitHub(pr), deepseek=deepseek, cache=cache)
+
+    # 第一次流式写入缓存
+    first = await _collect(svc.summarize_stream(pr.ref))
+    # 第二次命中缓存：不流式，单个 chunk 直接带结果
+    second = await _collect(svc.summarize_stream(pr.ref))
+
+    assert deepseek.stream_calls == 1
+    assert len(second) == 1
+    assert second[0].delta == ""
+    assert second[0].result is not None
+    assert second[0].result.cached is True
+    assert first[-1].result.cached is False

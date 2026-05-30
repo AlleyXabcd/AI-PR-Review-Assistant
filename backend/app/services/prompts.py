@@ -21,15 +21,24 @@ _MAX_CONTEXT_CHARS = 12000
 SUMMARY_SYSTEM_PROMPT = (
     "你是一位资深的代码评审专家。请阅读给定的 GitHub Pull Request 变更，"
     "用简洁、准确的中文总结本次改动。不要臆测未给出的代码，只基于提供的 diff 与元信息。"
-    "请严格按要求的 JSON 格式输出，不要输出 JSON 以外的任何内容。"
+    "请严格按要求的两段式格式输出。"
 )
 
-SUMMARY_OUTPUT_SPEC = """请输出如下 JSON（仅输出 JSON，不要使用 markdown 代码块包裹）：
-{
-  "overview": "一段话概述本次 PR 的意图与整体改动",
+# 总结分隔标记：标记前为可逐字流式直显的概述正文，标记后为结构化元信息 JSON。
+SUMMARY_META_MARKER = "===META==="
+
+SUMMARY_OUTPUT_SPEC = f"""请按如下两段式输出，分两部分：
+
+第一部分：直接写一段自然语言的「概述」，说明本次 PR 的意图与整体改动。只写正文，不要加任何标题、前缀或 JSON。
+
+然后另起一行，输出且仅输出这一行分隔标记：
+{SUMMARY_META_MARKER}
+
+第二部分：在分隔标记之后输出如下 JSON（不要使用 markdown 代码块包裹）：
+{{
   "key_changes": ["关键改动要点1", "关键改动要点2", "..."],
   "impact": "本次改动可能的影响、风险或需要评审者重点关注的地方"
-}"""
+}}"""
 
 
 def _render_files(pr: PullRequest) -> str:

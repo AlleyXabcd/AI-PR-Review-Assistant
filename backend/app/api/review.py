@@ -1,7 +1,10 @@
 """Review 相关路由。"""
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.models.review import (
     RiskRequest,
@@ -12,6 +15,7 @@ from app.models.review import (
 from app.services.cache import get_cache
 from app.services.deepseek_client import DeepSeekError
 from app.services.github_client import GitHubError, parse_pr_url
+from app.services.review_stream import StreamEvent, format_sse, stream_analysis
 from app.services.risk_service import RiskService
 from app.services.summary_service import SummaryService
 
@@ -50,3 +54,26 @@ async def detect_risks(req: RiskRequest) -> RisksResponse:
         raise HTTPException(status_code=502, detail=f"GitHub 抓取失败：{exc}") from exc
     except DeepSeekError as exc:
         raise HTTPException(status_code=502, detail=f"模型调用失败：{exc}") from exc
+
+
+@router.get("/stream")
+async def stream_review(pr_url: str) -> StreamingResponse:
+    """以 SSE 流式返回分析进度与结果：summary / risks 谁先分析完谁先到。
+
+    用浏览器原生 EventSource 消费（GET + text/event-stream）。
+    """
+
+    async def event_source() -> AsyncIterator[str]:
+        try:
+            ref = parse_pr_url(pr_url)
+        except GitHubError as exc:
+            yield format_sse(StreamEvent("error", {"message": str(exc)}))
+            return
+        async for event in stream_analysis(ref, cache=get_cache()):
+            yield format_sse(event)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
