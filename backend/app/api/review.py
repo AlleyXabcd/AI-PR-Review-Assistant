@@ -11,6 +11,8 @@ from app.models.review import (
     RisksResponse,
     SummaryRequest,
     SummaryResponse,
+    WritebackRequest,
+    WritebackResponse,
 )
 from app.services.cache import get_cache
 from app.services.deepseek_client import DeepSeekError
@@ -18,6 +20,7 @@ from app.services.github_client import GitHubError, parse_pr_url
 from app.services.review_stream import StreamEvent, format_sse, stream_analysis
 from app.services.risk_service import RiskService
 from app.services.summary_service import SummaryService
+from app.services.writeback_service import WritebackService
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -52,6 +55,27 @@ async def detect_risks(req: RiskRequest) -> RisksResponse:
         return await service.detect(ref)
     except GitHubError as exc:
         raise HTTPException(status_code=502, detail=f"GitHub 抓取失败：{exc}") from exc
+    except DeepSeekError as exc:
+        raise HTTPException(status_code=502, detail=f"模型调用失败：{exc}") from exc
+
+
+@router.post("/writeback", response_model=WritebackResponse)
+async def writeback(req: WritebackRequest) -> WritebackResponse:
+    """把分析结果拼成评论回写到 GitHub PR。
+
+    dry_run=True（默认）只返回评论预览不发送；dry_run=False 才真正发布，
+    需要 GITHUB_TOKEN 对目标仓库具备写权限。
+    """
+    try:
+        ref = parse_pr_url(req.pr_url)
+    except GitHubError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    service = WritebackService(cache=get_cache())
+    try:
+        return await service.build(ref, dry_run=req.dry_run)
+    except GitHubError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub 操作失败：{exc}") from exc
     except DeepSeekError as exc:
         raise HTTPException(status_code=502, detail=f"模型调用失败：{exc}") from exc
 

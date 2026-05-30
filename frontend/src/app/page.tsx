@@ -6,9 +6,11 @@ import type { RiskItem, RisksResponse, SummaryResponse } from "@/lib/types";
 import { SummaryView } from "@/components/SummaryView";
 import { DiffView, type LocateTarget } from "@/components/DiffView";
 import { RiskOverview } from "@/components/RiskOverview";
+import { WritebackPanel } from "@/components/WritebackPanel";
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  const [submittedUrl, setSubmittedUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +44,9 @@ export default function Home() {
     setRisks(null);
     setLocate(null);
 
-    cancelRef.current = streamReview(url.trim(), {
+    const target = url.trim();
+    setSubmittedUrl(target);
+    cancelRef.current = streamReview(target, {
       onStage: (msg) => setStage(msg),
       onSummaryDelta: (text) => setStreamingOverview((prev) => prev + text),
       onSummary: (s) => setSummary(s),
@@ -133,6 +137,13 @@ export default function Home() {
               : "代码变更与风险（风险分析中…）"}
           </h2>
           <DiffView files={summary.files} risks={risks?.risks ?? []} locate={locate} />
+        </section>
+      )}
+
+      {/* 分析完成（总结与风险都已到）后才允许回写，确保评论包含完整结果 */}
+      {summary && risks && !loading && (
+        <section className="mt-8">
+          <WritebackPanel prUrl={submittedUrl} />
         </section>
       )}
     </main>

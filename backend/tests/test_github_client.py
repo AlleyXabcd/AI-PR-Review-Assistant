@@ -135,3 +135,32 @@ async def test_fetch_file_contents_skips_missing_and_binary(ref):
 async def test_fetch_file_contents_empty_paths(ref):
     out = await GitHubClient(_settings()).fetch_file_contents(ref, [], "head456")
     assert out == []
+
+
+@respx.mock
+async def test_post_issue_comment_ok(ref):
+    route = respx.post(f"{API}/repos/octo/demo/issues/1/comments").mock(
+        return_value=httpx.Response(
+            201,
+            json={"html_url": "https://github.com/octo/demo/pull/1#issuecomment-99"},
+        )
+    )
+
+    url = await GitHubClient(_settings()).post_issue_comment(ref, "hello")
+
+    assert route.called
+    assert url == "https://github.com/octo/demo/pull/1#issuecomment-99"
+    # 请求体携带评论正文
+    sent = route.calls.last.request
+    import json as _json
+
+    assert _json.loads(sent.content)["body"] == "hello"
+
+
+@respx.mock
+async def test_post_issue_comment_forbidden_raises(ref):
+    respx.post(f"{API}/repos/octo/demo/issues/1/comments").mock(
+        return_value=httpx.Response(403, json={"message": "Forbidden"})
+    )
+    with pytest.raises(GitHubError, match="写权限"):
+        await GitHubClient(_settings()).post_issue_comment(ref, "hi")
