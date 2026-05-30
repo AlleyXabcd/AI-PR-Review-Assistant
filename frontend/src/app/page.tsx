@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { streamReview } from "@/lib/api";
-import type { RisksResponse, SummaryResponse } from "@/lib/types";
+import type { RiskItem, RisksResponse, SummaryResponse } from "@/lib/types";
 import { SummaryView } from "@/components/SummaryView";
-import { DiffView } from "@/components/DiffView";
+import { DiffView, type LocateTarget } from "@/components/DiffView";
+import { RiskOverview } from "@/components/RiskOverview";
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -14,10 +15,20 @@ export default function Home() {
   const [streamingOverview, setStreamingOverview] = useState("");
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [risks, setRisks] = useState<RisksResponse | null>(null);
+  const [locate, setLocate] = useState<LocateTarget | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
 
   // 卸载时关闭可能仍打开的 SSE 连接
   useEffect(() => () => cancelRef.current?.(), []);
+
+  function handleLocate(risk: RiskItem) {
+    // nonce 递增：即使重复点同一条，也能触发 DiffView 的定位 effect
+    setLocate((prev) => ({
+      file: risk.file,
+      line: risk.line,
+      nonce: (prev?.nonce ?? 0) + 1,
+    }));
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -29,6 +40,7 @@ export default function Home() {
     setStreamingOverview("");
     setSummary(null);
     setRisks(null);
+    setLocate(null);
 
     cancelRef.current = streamReview(url.trim(), {
       onStage: (msg) => setStage(msg),
@@ -105,12 +117,22 @@ export default function Home() {
 
       {summary && (
         <section className="mt-8">
+          <RiskOverview
+            risks={risks?.risks ?? []}
+            loading={!risks}
+            onLocate={handleLocate}
+          />
+        </section>
+      )}
+
+      {summary && (
+        <section className="mt-8">
           <h2 className="mb-3 text-lg font-semibold">
             {risks
               ? `代码变更与风险（${risks.risks.length} 个风险点）`
               : "代码变更与风险（风险分析中…）"}
           </h2>
-          <DiffView files={summary.files} risks={risks?.risks ?? []} />
+          <DiffView files={summary.files} risks={risks?.risks ?? []} locate={locate} />
         </section>
       )}
     </main>

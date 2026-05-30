@@ -1,20 +1,22 @@
 "use client";
 
-import { useState } from "react";
-import type { FileChange, RiskItem, RiskSeverity } from "@/lib/types";
+import { useEffect, useState } from "react";
+import type { FileChange, RiskItem } from "@/lib/types";
 import { parsePatch, type DiffLine } from "@/lib/diff";
+import {
+  CATEGORY_LABEL,
+  SEVERITY_LABEL,
+  SEVERITY_STYLE,
+  diffFileAnchor,
+  diffLineAnchor,
+} from "@/lib/risk";
 
-const SEVERITY_STYLE: Record<RiskSeverity, string> = {
-  high: "border-red-700 bg-red-950/40 text-red-300",
-  medium: "border-amber-700 bg-amber-950/40 text-amber-300",
-  low: "border-sky-700 bg-sky-950/40 text-sky-300",
-};
-
-const SEVERITY_LABEL: Record<RiskSeverity, string> = {
-  high: "高危",
-  medium: "中危",
-  low: "低危",
-};
+// 点击概览项时下发的定位信号；nonce 保证重复点击同一目标也能再次触发
+export interface LocateTarget {
+  file: string;
+  line: number | null;
+  nonce: number;
+}
 
 function RiskCard({ risk }: { risk: RiskItem }) {
   return (
@@ -25,7 +27,9 @@ function RiskCard({ risk }: { risk: RiskItem }) {
         <span className="rounded bg-black/30 px-1.5 py-0.5">
           {SEVERITY_LABEL[risk.severity]}
         </span>
-        <span className="rounded bg-black/30 px-1.5 py-0.5">{risk.category}</span>
+        <span className="rounded bg-black/30 px-1.5 py-0.5">
+          {CATEGORY_LABEL[risk.category] ?? risk.category}
+        </span>
         <span>{risk.title}</span>
         <span className="ml-auto opacity-70">
           置信度 {(risk.confidence * 100).toFixed(0)}%
@@ -59,11 +63,14 @@ const LINE_MARK: Record<DiffLine["type"], string> = {
 function FileDiff({
   file,
   risks,
+  locate,
 }: {
   file: FileChange;
   risks: RiskItem[];
+  locate: LocateTarget | null;
 }) {
   const [open, setOpen] = useState(true);
+  const [flashLine, setFlashLine] = useState<number | null>(null);
   const lines = parsePatch(file.patch);
 
   // 把风险按新文件行号归组，渲染时叠加到对应行下方
@@ -79,10 +86,33 @@ function FileDiff({
     }
   }
 
+  // 收到指向本文件的定位信号：展开、滚动到目标行（无行号则滚到文件头）并短暂高亮
+  useEffect(() => {
+    if (!locate || locate.file !== file.filename) return;
+    setOpen(true);
+    const anchorId =
+      locate.line != null
+        ? diffLineAnchor(file.filename, locate.line)
+        : diffFileAnchor(file.filename);
+    // 等展开后的 DOM 就绪再滚动
+    const t = setTimeout(() => {
+      const el = document.getElementById(anchorId);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (locate.line != null) {
+        setFlashLine(locate.line);
+        setTimeout(() => setFlashLine(null), 1600);
+      }
+    }, 0);
+    return () => clearTimeout(t);
+  }, [locate, file.filename]);
+
   const riskCount = risks.length;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-neutral-800">
+    <div
+      id={diffFileAnchor(file.filename)}
+      className="scroll-mt-4 overflow-hidden rounded-lg border border-neutral-800"
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -122,8 +152,10 @@ function FileDiff({
                 {lines.map((ln, i) => (
                   <DiffRow
                     key={i}
+                    file={file.filename}
                     line={ln}
                     risks={ln.newLine != null ? risksByLine.get(ln.newLine) : undefined}
+                    flash={ln.newLine != null && ln.newLine === flashLine}
                   />
                 ))}
               </tbody>
@@ -136,11 +168,15 @@ function FileDiff({
 }
 
 function DiffRow({
+  file,
   line,
   risks,
+  flash,
 }: {
+  file: string;
   line: DiffLine;
   risks: RiskItem[] | undefined;
+  flash: boolean;
 }) {
   if (line.type === "hunk") {
     return (
@@ -152,9 +188,17 @@ function DiffRow({
     );
   }
 
+  const anchorId =
+    line.newLine != null ? diffLineAnchor(file, line.newLine) : undefined;
+
   return (
     <>
-      <tr className={LINE_BG[line.type]}>
+      <tr
+        id={anchorId}
+        className={`scroll-mt-16 transition-colors duration-700 ${
+          flash ? "bg-blue-900/50" : LINE_BG[line.type]
+        }`}
+      >
         <td className="w-10 select-none px-2 text-right text-neutral-600">
           {line.oldLine ?? ""}
         </td>
@@ -182,9 +226,11 @@ function DiffRow({
 export function DiffView({
   files,
   risks,
+  locate = null,
 }: {
   files: FileChange[];
   risks: RiskItem[];
+  locate?: LocateTarget | null;
 }) {
   const risksByFile = new Map<string, RiskItem[]>();
   for (const r of risks) {
@@ -196,7 +242,12 @@ export function DiffView({
   return (
     <div className="space-y-3">
       {files.map((f) => (
-        <FileDiff key={f.filename} file={f} risks={risksByFile.get(f.filename) ?? []} />
+        <FileDiff
+          key={f.filename}
+          file={f}
+          risks={risksByFile.get(f.filename) ?? []}
+          locate={locate}
+        />
       ))}
     </div>
   );
