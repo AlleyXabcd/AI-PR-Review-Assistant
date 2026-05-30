@@ -1,14 +1,34 @@
-"""Review（变更总结等）相关数据模型。"""
+"""Review（变更总结、风险识别等）相关数据模型。"""
 from __future__ import annotations
+
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.models.github import PRCommit, PRFile
 from app.models.llm import TokenUsage
 
+# 风险严重级别与分类的合法取值（也用于服务层归一化模型输出）
+Severity = Literal["high", "medium", "low"]
+Category = Literal["security", "performance", "correctness", "maintainability"]
+
+SEVERITIES: tuple[str, ...] = ("high", "medium", "low")
+CATEGORIES: tuple[str, ...] = (
+    "security",
+    "performance",
+    "correctness",
+    "maintainability",
+)
+
 
 class SummaryRequest(BaseModel):
     """变更总结请求。"""
+
+    pr_url: str = Field(..., description="GitHub PR 地址或 owner/repo#number 简写")
+
+
+class RiskRequest(BaseModel):
+    """风险识别请求。"""
 
     pr_url: str = Field(..., description="GitHub PR 地址或 owner/repo#number 简写")
 
@@ -50,6 +70,42 @@ class SummaryResponse(BaseModel):
     commits: list[PRCommit] = Field(default_factory=list)
 
     summary: PRSummary
+    model: str = ""
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+
+
+class RiskItem(BaseModel):
+    """单条风险点。"""
+
+    file: str = Field(..., description="风险所在文件路径")
+    line: int | None = Field(None, description="风险所在行号（diff 新文件行号，可空）")
+    severity: Severity = Field("low", description="严重级别")
+    category: Category = Field("correctness", description="风险分类")
+    title: str = Field(..., description="一句话风险标题")
+    detail: str = Field("", description="风险说明：为什么这是个问题")
+    suggestion: str = Field("", description="可执行的修改建议")
+    confidence: float = Field(
+        0.5, ge=0.0, le=1.0, description="模型对该风险的置信度 0~1"
+    )
+
+
+class RisksResponse(BaseModel):
+    """风险识别接口的完整响应。"""
+
+    # PR 基础元信息
+    title: str
+    author: str | None = None
+    state: str
+    base_branch: str
+    head_branch: str
+    html_url: str = ""
+    additions: int = 0
+    deletions: int = 0
+    changed_files: int = 0
+
+    files: list[FileChange] = Field(default_factory=list)
+
+    risks: list[RiskItem] = Field(default_factory=list)
     model: str = ""
     usage: TokenUsage = Field(default_factory=TokenUsage)
 

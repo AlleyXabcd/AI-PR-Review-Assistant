@@ -50,8 +50,7 @@ def _render_commits(pr: PullRequest) -> str:
     return "\n".join(lines) if lines else "（无提交信息）"
 
 
-def build_summary_prompt(pr: PullRequest) -> str:
-    """构建变更总结的 user prompt。"""
+def _render_meta(pr: PullRequest) -> str:
     meta = (
         f"# PR 元信息\n"
         f"标题: {pr.title}\n"
@@ -62,8 +61,46 @@ def build_summary_prompt(pr: PullRequest) -> str:
     if pr.body:
         body = pr.body if len(pr.body) <= 2000 else pr.body[:2000] + " ...[已截断]"
         meta += f"\n# PR 描述\n{body}\n"
+    return meta
 
+
+def build_summary_prompt(pr: PullRequest) -> str:
+    """构建变更总结的 user prompt。"""
+    meta = _render_meta(pr)
     commits = f"\n# 提交记录\n{_render_commits(pr)}\n"
     files = f"\n# 变更内容（diff）\n{_render_files(pr)}\n"
 
     return f"{meta}{commits}{files}\n{SUMMARY_OUTPUT_SPEC}"
+
+
+RISK_SYSTEM_PROMPT = (
+    "你是一位经验丰富的代码安全与质量评审专家。请仔细审查给定 GitHub Pull Request "
+    "的代码变更，找出其中真实存在的风险点。只基于提供的 diff 判断，不要臆测未给出的代码。"
+    "宁缺毋滥：仅在你较有把握时才报告风险，没有发现风险时返回空数组，不要为了凑数而编造。"
+    "请严格按要求的 JSON 格式输出，不要输出 JSON 以外的任何内容。"
+)
+
+RISK_OUTPUT_SPEC = """请输出如下 JSON（仅输出 JSON，不要使用 markdown 代码块包裹）：
+{
+  "risks": [
+    {
+      "file": "出现风险的文件路径",
+      "line": 行号（diff 中新增/修改代码所在的行号，整数；无法确定时用 null）,
+      "severity": "high | medium | low（严重级别）",
+      "category": "security | performance | correctness | maintainability（风险分类）",
+      "title": "一句话概括该风险",
+      "detail": "为什么这是个问题，结合具体代码说明",
+      "suggestion": "可执行的修改建议",
+      "confidence": 0.0~1.0 之间的小数，表示你对该判断的置信度
+    }
+  ]
+}
+没有发现任何风险时输出 {"risks": []}。"""
+
+
+def build_risk_prompt(pr: PullRequest) -> str:
+    """构建风险识别的 user prompt。"""
+    meta = _render_meta(pr)
+    files = f"\n# 变更内容（diff）\n{_render_files(pr)}\n"
+
+    return f"{meta}{files}\n{RISK_OUTPUT_SPEC}"
