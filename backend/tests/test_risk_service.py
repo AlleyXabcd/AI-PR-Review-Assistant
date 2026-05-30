@@ -22,9 +22,12 @@ class _FakeGitHub:
 
 
 class _FakeDeepSeek:
-    def __init__(self, content: str):
+    def __init__(self, content: str, reason_content: str | None = None):
         self._content = content
+        self._reason_content = reason_content
         self.last_messages = None
+        self.reason_messages = None
+        self.reason_called = False
 
     async def chat(self, messages, *, temperature=0.2, max_tokens=None):
         self.last_messages = messages
@@ -32,6 +35,16 @@ class _FakeDeepSeek:
             content=self._content,
             model="deepseek-chat",
             usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+        )
+
+    async def reason(self, messages, *, max_tokens=None):
+        self.reason_called = True
+        self.reason_messages = messages
+        return LLMResponse(
+            content=self._reason_content or '{"reviews": []}',
+            model="deepseek-reasoner",
+            reasoning="思考过程",
+            usage=TokenUsage(prompt_tokens=200, completion_tokens=80, total_tokens=280),
         )
 
 
@@ -66,11 +79,12 @@ def _sample_pr() -> PullRequest:
 async def test_detect_parses_structured_risks():
     pr = _sample_pr()
     content = (
-        '{"risks": [{"file": "auth.py", "line": 12, "severity": "high", '
+        '{"risks": [{"file": "auth.py", "line": 12, "severity": "medium", '
         '"category": "security", "title": "SQL 注入", "detail": "拼接用户输入", '
         '"suggestion": "使用参数化查询", "confidence": 0.9}]}'
     )
-    svc = RiskService(github=_FakeGitHub(pr), deepseek=_FakeDeepSeek(content))
+    deepseek = _FakeDeepSeek(content)
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek)
 
     resp = await svc.detect(pr.ref)
 
@@ -80,11 +94,14 @@ async def test_detect_parses_structured_risks():
     risk = resp.risks[0]
     assert risk.file == "auth.py"
     assert risk.line == 12
-    assert risk.severity == "high"
+    assert risk.severity == "medium"
     assert risk.category == "security"
     assert risk.title == "SQL 注入"
     assert risk.confidence == 0.9
+    # 无高危风险，不触发 R1 第二层
+    assert deepseek.reason_called is False
     assert resp.usage.total_tokens == 150
+    assert resp.model == "deepseek-chat"
 
 
 async def test_detect_normalizes_invalid_enums_and_confidence():
@@ -183,4 +200,114 @@ async def test_detect_skips_removed_files_for_context():
 
     # 删除文件与无 patch 文件不参与上下文拉取
     assert github.context_call == (["auth.py"], "h1")
+
+
+# ---- 双层分析：V3 分诊 → R1 复查高危 ----
+
+_HIGH_RISK = (
+    '{"risks": [{"file": "auth.py", "line": 12, "severity": "high", '
+    '"category": "security", "title": "SQL 注入", "detail": "拼接用户输入", '
+    '"suggestion": "改用参数化查询", "confidence": 0.8}]}'
+)
+
+
+async def test_review_confirms_high_risk():
+    pr = _sample_pr()
+    reason = '{"reviews": [{"index": 0, "verdict": "confirm", "confidence": 0.95}]}'
+    deepseek = _FakeDeepSeek(_HIGH_RISK, reason_content=reason)
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    resp = await svc.detect(pr.ref)
+
+    assert deepseek.reason_called is True
+    assert len(resp.risks) == 1
+    assert resp.risks[0].severity == "high"
+    assert resp.risks[0].confidence == 0.95
+    # 两次调用 usage 累加，model 记录双模型
+    assert resp.usage.total_tokens == 150 + 280
+    assert resp.model == "deepseek-chat + deepseek-reasoner"
+
+
+async def test_review_rejects_false_positive():
+    pr = _sample_pr()
+    reason = '{"reviews": [{"index": 0, "verdict": "reject", "detail": "有上层校验，误报"}]}'
+    deepseek = _FakeDeepSeek(_HIGH_RISK, reason_content=reason)
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    resp = await svc.detect(pr.ref)
+
+    # 被 R1 判定为误报的高危风险从列表剔除
+    assert resp.risks == []
+    assert resp.usage.total_tokens == 150 + 280
+
+
+async def test_review_adjusts_severity():
+    pr = _sample_pr()
+    reason = (
+        '{"reviews": [{"index": 0, "verdict": "adjust", "severity": "low", '
+        '"detail": "影响有限", "suggestion": "可选优化"}]}'
+    )
+    deepseek = _FakeDeepSeek(_HIGH_RISK, reason_content=reason)
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    resp = await svc.detect(pr.ref)
+
+    assert len(resp.risks) == 1
+    risk = resp.risks[0]
+    assert risk.severity == "low"
+    assert risk.detail == "影响有限"
+    assert risk.suggestion == "可选优化"
+
+
+async def test_review_skipped_when_no_high_risk():
+    pr = _sample_pr()
+    content = (
+        '{"risks": [{"file": "auth.py", "severity": "low", '
+        '"category": "maintainability", "title": "命名"}]}'
+    )
+    deepseek = _FakeDeepSeek(content)
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    resp = await svc.detect(pr.ref)
+
+    # 无高危风险，第二层不触发
+    assert deepseek.reason_called is False
+    assert resp.usage.total_tokens == 150
+    assert len(resp.risks) == 1
+
+
+async def test_review_bad_json_keeps_v3_result():
+    pr = _sample_pr()
+    deepseek = _FakeDeepSeek(_HIGH_RISK, reason_content="R1 没有返回 JSON")
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    resp = await svc.detect(pr.ref)
+
+    # R1 输出无法解析时，保留 V3 的高危风险不动
+    assert deepseek.reason_called is True
+    assert len(resp.risks) == 1
+    assert resp.risks[0].severity == "high"
+    assert resp.risks[0].confidence == 0.8
+
+
+async def test_review_prompt_includes_high_risks_only():
+    pr = _sample_pr()
+    content = (
+        '{"risks": ['
+        '{"file": "auth.py", "line": 12, "severity": "high", "category": "security", '
+        '"title": "SQL 注入", "detail": "拼接输入"}, '
+        '{"file": "auth.py", "line": 3, "severity": "low", "category": "maintainability", '
+        '"title": "命名不清", "detail": "变量名"}'
+        ']}'
+    )
+    deepseek = _FakeDeepSeek(content, reason_content='{"reviews": []}')
+    svc = RiskService(github=_FakeGitHub(pr), deepseek=deepseek)
+
+    await svc.detect(pr.ref)
+
+    review_prompt = deepseek.reason_messages[1].content
+    assert "SQL 注入" in review_prompt
+    # 非高危风险不进入复查 prompt
+    assert "命名不清" not in review_prompt
+
 
