@@ -6,12 +6,21 @@
 """
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
+import logging
 import re
 
 import httpx
 
 from app.core.config import Settings, get_settings
-from app.models.github import PRCommit, PRFile, PRRef, PullRequest
+from app.models.github import FileContext, PRCommit, PRFile, PRRef, PullRequest
+
+logger = logging.getLogger(__name__)
+
+# 单个上下文文件内容上限（字符），超出则跳过，避免请求体过大
+_MAX_CONTEXT_CHARS = 20000
 
 # 支持的形式：
 #   https://github.com/owner/repo/pull/123
@@ -104,6 +113,58 @@ class GitHubClient:
             files=files,
             commits=commits,
         )
+
+    async def fetch_file_contents(
+        self, ref: PRRef, paths: list[str], sha: str
+    ) -> list[FileContext]:
+        """并发拉取给定 ref(sha) 下若干文件的完整内容。
+
+        best-effort：单个文件 404 / 二进制 / 过大 / 解码失败时跳过，不影响其余文件。
+        """
+        if not paths:
+            return []
+
+        base = self._settings.github_api_base.rstrip("/")
+        async with httpx.AsyncClient(
+            base_url=base,
+            headers=self._headers(),
+            timeout=self._settings.http_timeout,
+        ) as client:
+            results = await asyncio.gather(
+                *(self._fetch_one_content(client, ref, p, sha) for p in paths)
+            )
+        return [c for c in results if c is not None]
+
+    async def _fetch_one_content(
+        self, client: httpx.AsyncClient, ref: PRRef, path: str, sha: str
+    ) -> FileContext | None:
+        url = f"/repos/{ref.owner}/{ref.repo}/contents/{path}"
+        try:
+            resp = await client.get(url, params={"ref": sha})
+        except httpx.HTTPError as exc:
+            logger.warning("拉取文件内容失败 %s: %s", path, exc)
+            return None
+
+        if resp.status_code != 200:
+            logger.info("跳过文件上下文 %s（HTTP %s）", path, resp.status_code)
+            return None
+
+        data = resp.json()
+        if not isinstance(data, dict) or data.get("encoding") != "base64":
+            # 目录或非 base64（如超过 1MB 的大文件 GitHub 不内联返回内容）
+            return None
+
+        raw = data.get("content", "")
+        try:
+            text = base64.b64decode(raw).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            # 二进制或非 UTF-8 文件，作为上下文无意义，跳过
+            return None
+
+        if len(text) > _MAX_CONTEXT_CHARS:
+            text = text[:_MAX_CONTEXT_CHARS] + "\n... [文件过长，已截断]"
+
+        return FileContext(filename=path, content=text)
 
     async def _fetch_files(
         self, client: httpx.AsyncClient, pr_path: str

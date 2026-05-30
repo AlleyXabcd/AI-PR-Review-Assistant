@@ -1,16 +1,24 @@
 import pytest
 
-from app.models.github import PRCommit, PRFile, PRRef, PullRequest
+from app.models.github import FileContext, PRCommit, PRFile, PRRef, PullRequest
 from app.models.llm import LLMResponse, TokenUsage
 from app.services.risk_service import RiskService
 
 
 class _FakeGitHub:
-    def __init__(self, pr: PullRequest):
+    def __init__(self, pr: PullRequest, contexts: list[FileContext] | None = None):
         self._pr = pr
+        self._contexts = contexts or []
+        self.context_call: tuple[list[str], str] | None = None
 
     async def fetch_pull_request(self, ref: PRRef) -> PullRequest:
         return self._pr
+
+    async def fetch_file_contents(
+        self, ref: PRRef, paths: list[str], sha: str
+    ) -> list[FileContext]:
+        self.context_call = (paths, sha)
+        return self._contexts
 
 
 class _FakeDeepSeek:
@@ -144,3 +152,35 @@ async def test_detect_falls_back_when_risks_not_list():
     resp = await svc.detect(pr.ref)
 
     assert resp.risks == []
+
+
+async def test_detect_injects_file_context_into_prompt():
+    pr = _sample_pr()
+    contexts = [FileContext(filename="auth.py", content="def login(uid):\n    ...")]
+    github = _FakeGitHub(pr, contexts=contexts)
+    deepseek = _FakeDeepSeek('{"risks": []}')
+    svc = RiskService(github=github, deepseek=deepseek)
+
+    await svc.detect(pr.ref)
+
+    # 用 head_sha 拉取变更文件全文
+    assert github.context_call == (["auth.py"], "h1")
+    # 文件全文被注入到发给模型的 user prompt
+    user_prompt = deepseek.last_messages[1].content
+    assert "变更文件完整内容" in user_prompt
+    assert "def login(uid):" in user_prompt
+
+
+async def test_detect_skips_removed_files_for_context():
+    pr = _sample_pr()
+    pr.files.append(
+        PRFile(filename="old.py", status="removed", additions=0, deletions=9, patch=None)
+    )
+    github = _FakeGitHub(pr)
+    svc = RiskService(github=github, deepseek=_FakeDeepSeek('{"risks": []}'))
+
+    await svc.detect(pr.ref)
+
+    # 删除文件与无 patch 文件不参与上下文拉取
+    assert github.context_call == (["auth.py"], "h1")
+

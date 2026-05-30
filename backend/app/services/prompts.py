@@ -4,12 +4,14 @@
 """
 from __future__ import annotations
 
-from app.models.github import PullRequest
+from app.models.github import FileContext, PullRequest
 
 # 控制单次请求体量，避免超长输入：每个文件 patch 截断上限（字符）
 _MAX_PATCH_CHARS = 6000
 # 参与总结的文件数量上限（按变更量排序后取前 N）
 _MAX_FILES = 50
+# 单个上下文文件在 prompt 中的渲染上限（字符）
+_MAX_CONTEXT_CHARS = 12000
 
 SUMMARY_SYSTEM_PROMPT = (
     "你是一位资深的代码评审专家。请阅读给定的 GitHub Pull Request 变更，"
@@ -75,7 +77,10 @@ def build_summary_prompt(pr: PullRequest) -> str:
 
 RISK_SYSTEM_PROMPT = (
     "你是一位经验丰富的代码安全与质量评审专家。请仔细审查给定 GitHub Pull Request "
-    "的代码变更，找出其中真实存在的风险点。只基于提供的 diff 判断，不要臆测未给出的代码。"
+    "的代码变更，找出其中真实存在的风险点。"
+    "我可能会额外提供变更文件的完整内容作为上下文：请结合上下文理解被修改代码的"
+    "作用与调用关系，但你的风险结论应聚焦于本次 diff 改动的代码，不要去评审未改动的既有代码。"
+    "只基于提供的信息判断，不要臆测未给出的代码。"
     "宁缺毋滥：仅在你较有把握时才报告风险，没有发现风险时返回空数组，不要为了凑数而编造。"
     "请严格按要求的 JSON 格式输出，不要输出 JSON 以外的任何内容。"
 )
@@ -98,9 +103,30 @@ RISK_OUTPUT_SPEC = """请输出如下 JSON（仅输出 JSON，不要使用 markd
 没有发现任何风险时输出 {"risks": []}。"""
 
 
-def build_risk_prompt(pr: PullRequest) -> str:
-    """构建风险识别的 user prompt。"""
+def _render_contexts(contexts: list[FileContext]) -> str:
+    blocks: list[str] = []
+    for c in contexts:
+        content = c.content
+        if len(content) > _MAX_CONTEXT_CHARS:
+            content = content[:_MAX_CONTEXT_CHARS] + "\n... [文件过长，已截断]"
+        blocks.append(f"文件: {c.filename}\n```\n{content}\n```")
+    return "\n\n".join(blocks)
+
+
+def build_risk_prompt(
+    pr: PullRequest, contexts: list[FileContext] | None = None
+) -> str:
+    """构建风险识别的 user prompt。
+
+    contexts 为变更文件在 head 版本的完整内容，用于补充跨文件上下文；为空则仅基于 diff。
+    """
     meta = _render_meta(pr)
     files = f"\n# 变更内容（diff）\n{_render_files(pr)}\n"
+    context_block = ""
+    if contexts:
+        context_block = (
+            f"\n# 变更文件完整内容（改动后版本，供理解上下文）\n"
+            f"{_render_contexts(contexts)}\n"
+        )
 
-    return f"{meta}{files}\n{RISK_OUTPUT_SPEC}"
+    return f"{meta}{files}{context_block}\n{RISK_OUTPUT_SPEC}"

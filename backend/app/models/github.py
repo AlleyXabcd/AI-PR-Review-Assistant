@@ -41,6 +41,13 @@ class PRCommit(BaseModel):
     date: str | None = None
 
 
+class FileContext(BaseModel):
+    """某个文件在指定 ref 下的完整内容（用于补充跨文件上下文）。"""
+
+    filename: str
+    content: str
+
+
 class PullRequest(BaseModel):
     """一个 PR 的完整抓取结果。"""
 

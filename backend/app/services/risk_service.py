@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from app.models.github import PRRef
+from app.models.github import FileContext, PRRef, PullRequest
 from app.models.llm import ChatMessage
 from app.models.review import (
     CATEGORIES,
@@ -13,11 +13,14 @@ from app.models.review import (
     to_file_changes,
 )
 from app.services.deepseek_client import DeepSeekClient
-from app.services.github_client import GitHubClient
+from app.services.github_client import GitHubClient, GitHubError
 from app.services.json_utils import extract_json
 from app.services.prompts import RISK_SYSTEM_PROMPT, build_risk_prompt
 
 logger = logging.getLogger(__name__)
+
+# 拉取完整内容作为上下文的文件数上限（按变更量排序取前 N），控制请求体量与延迟
+_MAX_CONTEXT_FILES = 10
 
 
 class RiskService:
@@ -32,9 +35,11 @@ class RiskService:
     async def detect(self, ref: PRRef) -> RisksResponse:
         pr = await self._github.fetch_pull_request(ref)
 
+        contexts = await self._collect_contexts(ref, pr)
+
         messages = [
             ChatMessage(role="system", content=RISK_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=build_risk_prompt(pr)),
+            ChatMessage(role="user", content=build_risk_prompt(pr, contexts)),
         ]
         llm = await self._deepseek.chat(messages, temperature=0.2)
 
@@ -55,6 +60,27 @@ class RiskService:
             model=llm.model,
             usage=llm.usage,
         )
+
+    async def _collect_contexts(self, ref: PRRef, pr: PullRequest) -> list[FileContext]:
+        """拉取变更文件在 head 版本的完整内容，作为跨文件上下文。
+
+        只取非删除、且有文本 diff 的文件，按变更量取前 N；拉取失败降级为空（仅用 diff）。
+        """
+        candidates = [
+            f
+            for f in pr.files
+            if f.status != "removed" and f.patch
+        ]
+        candidates.sort(key=lambda f: f.changes, reverse=True)
+        paths = [f.filename for f in candidates[:_MAX_CONTEXT_FILES]]
+        if not paths:
+            return []
+
+        try:
+            return await self._github.fetch_file_contents(ref, paths, pr.head_sha)
+        except GitHubError as exc:
+            logger.warning("拉取文件上下文失败，降级为仅使用 diff：%s", exc)
+            return []
 
     @classmethod
     def _parse_risks(cls, content: str) -> list[RiskItem]:

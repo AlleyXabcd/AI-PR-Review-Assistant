@@ -87,3 +87,51 @@ async def test_fetch_pull_request_404(ref):
     )
     with pytest.raises(GitHubError):
         await GitHubClient(_settings()).fetch_pull_request(ref)
+
+
+@respx.mock
+async def test_fetch_file_contents_decodes_base64(ref):
+    import base64
+
+    encoded = base64.b64encode("def f():\n    return 1\n".encode()).decode()
+    respx.get(f"{API}/repos/octo/demo/contents/src/app.py").mock(
+        return_value=httpx.Response(
+            200, json={"encoding": "base64", "content": encoded}
+        )
+    )
+
+    out = await GitHubClient(_settings()).fetch_file_contents(
+        ref, ["src/app.py"], "head456"
+    )
+
+    assert len(out) == 1
+    assert out[0].filename == "src/app.py"
+    assert "def f():" in out[0].content
+
+
+@respx.mock
+async def test_fetch_file_contents_skips_missing_and_binary(ref):
+    # 404 文件被跳过
+    respx.get(f"{API}/repos/octo/demo/contents/gone.py").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    # 非 base64 编码（如目录）被跳过
+    respx.get(f"{API}/repos/octo/demo/contents/dir").mock(
+        return_value=httpx.Response(200, json=[{"name": "a.py"}])
+    )
+    # 非 UTF-8 的 base64 内容被跳过
+    bad = "////"  # 解码为非 UTF-8 字节
+    respx.get(f"{API}/repos/octo/demo/contents/blob.bin").mock(
+        return_value=httpx.Response(200, json={"encoding": "base64", "content": bad})
+    )
+
+    out = await GitHubClient(_settings()).fetch_file_contents(
+        ref, ["gone.py", "dir", "blob.bin"], "head456"
+    )
+
+    assert out == []
+
+
+async def test_fetch_file_contents_empty_paths(ref):
+    out = await GitHubClient(_settings()).fetch_file_contents(ref, [], "head456")
+    assert out == []
