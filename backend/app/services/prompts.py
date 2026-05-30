@@ -4,7 +4,12 @@
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.models.github import FileContext, PullRequest
+
+if TYPE_CHECKING:
+    from app.models.review import RiskItem
 
 # 控制单次请求体量，避免超长输入：每个文件 patch 截断上限（字符）
 _MAX_PATCH_CHARS = 6000
@@ -130,3 +135,61 @@ def build_risk_prompt(
         )
 
     return f"{meta}{files}{context_block}\n{RISK_OUTPUT_SPEC}"
+
+
+REVIEW_SYSTEM_PROMPT = (
+    "你是一位极其严谨的资深安全评审专家，擅长深度推理。"
+    "下面会给你若干由初筛模型标为「高危」的风险点，以及对应的代码变更与上下文。"
+    "请逐条复核：判断该风险是否真实成立。"
+    "对每一条给出裁决：confirm（确认成立）、reject（实为误报，应剔除）、"
+    "adjust（成立但严重级别或描述需修正）。"
+    "复核时要结合上下文严格推理，剔除初筛模型因缺乏上下文产生的误报。"
+    "请严格按要求的 JSON 格式输出，不要输出 JSON 以外的任何内容。"
+)
+
+REVIEW_OUTPUT_SPEC = """请输出如下 JSON（仅输出 JSON，不要使用 markdown 代码块包裹）：
+{
+  "reviews": [
+    {
+      "index": 待复核风险点的编号（与下方列表一致，整数）,
+      "verdict": "confirm | reject | adjust",
+      "severity": "high | medium | low（verdict 为 adjust 时给出修正后的级别，否则可省略）",
+      "confidence": 0.0~1.0（你复核后的置信度）,
+      "detail": "复核理由（尤其 reject/adjust 时说明为什么）",
+      "suggestion": "修正后的修改建议（可选）"
+    }
+  ]
+}
+请对列表中的每一个编号都给出一条复核结果。"""
+
+
+def _render_high_risks(high_risks: list["RiskItem"]) -> str:
+    lines: list[str] = []
+    for i, r in enumerate(high_risks):
+        loc = f"{r.file}:{r.line}" if r.line is not None else r.file
+        lines.append(
+            f"[{i}] 位置: {loc}\n"
+            f"    分类: {r.category}\n"
+            f"    标题: {r.title}\n"
+            f"    说明: {r.detail}"
+        )
+    return "\n".join(lines)
+
+
+def build_review_prompt(
+    high_risks: list["RiskItem"],
+    pr: PullRequest,
+    contexts: list[FileContext] | None = None,
+) -> str:
+    """构建 R1 深度复查的 user prompt。"""
+    meta = _render_meta(pr)
+    risks_block = f"\n# 待复核的高危风险点\n{_render_high_risks(high_risks)}\n"
+    files = f"\n# 变更内容（diff）\n{_render_files(pr)}\n"
+    context_block = ""
+    if contexts:
+        context_block = (
+            f"\n# 变更文件完整内容（改动后版本，供理解上下文）\n"
+            f"{_render_contexts(contexts)}\n"
+        )
+
+    return f"{meta}{risks_block}{files}{context_block}\n{REVIEW_OUTPUT_SPEC}"
