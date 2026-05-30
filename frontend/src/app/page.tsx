@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { fetchRisks, fetchSummary } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { streamReview } from "@/lib/api";
 import type { RisksResponse, SummaryResponse } from "@/lib/types";
 import { SummaryView } from "@/components/SummaryView";
 import { DiffView } from "@/components/DiffView";
@@ -9,27 +9,42 @@ import { DiffView } from "@/components/DiffView";
 export default function Home() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [streamingOverview, setStreamingOverview] = useState("");
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [risks, setRisks] = useState<RisksResponse | null>(null);
+  const cancelRef = useRef<(() => void) | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
+  // 卸载时关闭可能仍打开的 SSE 连接
+  useEffect(() => () => cancelRef.current?.(), []);
+
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!url.trim() || loading) return;
+    cancelRef.current?.();
     setLoading(true);
     setError(null);
+    setStage(null);
+    setStreamingOverview("");
     setSummary(null);
     setRisks(null);
-    const pr = url.trim();
-    try {
-      const [s, r] = await Promise.all([fetchSummary(pr), fetchRisks(pr)]);
-      setSummary(s);
-      setRisks(r);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "未知错误");
-    } finally {
-      setLoading(false);
-    }
+
+    cancelRef.current = streamReview(url.trim(), {
+      onStage: (msg) => setStage(msg),
+      onSummaryDelta: (text) => setStreamingOverview((prev) => prev + text),
+      onSummary: (s) => setSummary(s),
+      onRisks: (r) => setRisks(r),
+      onError: (msg) => {
+        setError(msg);
+        setLoading(false);
+        setStage(null);
+      },
+      onDone: () => {
+        setLoading(false);
+        setStage(null);
+      },
+    });
   }
 
   return (
@@ -64,10 +79,22 @@ export default function Home() {
         </div>
       )}
 
-      {loading && (
-        <div className="mt-6 text-sm text-neutral-400">
-          正在抓取 PR 并调用模型，请稍候…
+      {loading && stage && (
+        <div className="mt-6 flex items-center gap-2 text-sm text-neutral-400">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+          {stage}
         </div>
+      )}
+
+      {/* 总结结构化结果到达前，先逐字显示概述正文 */}
+      {!summary && streamingOverview && (
+        <section className="mt-6 rounded-lg border border-neutral-800 bg-neutral-900/40 p-5">
+          <h3 className="mb-2 text-sm font-semibold text-neutral-200">变更概述</h3>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-300">
+            {streamingOverview}
+            <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-blue-400 align-middle" />
+          </p>
+        </section>
       )}
 
       {summary && (
@@ -76,12 +103,14 @@ export default function Home() {
         </div>
       )}
 
-      {risks && summary && (
+      {summary && (
         <section className="mt-8">
           <h2 className="mb-3 text-lg font-semibold">
-            代码变更与风险（{risks.risks.length} 个风险点）
+            {risks
+              ? `代码变更与风险（${risks.risks.length} 个风险点）`
+              : "代码变更与风险（风险分析中…）"}
           </h2>
-          <DiffView files={summary.files} risks={risks.risks} />
+          <DiffView files={summary.files} risks={risks?.risks ?? []} />
         </section>
       )}
     </main>

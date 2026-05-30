@@ -31,3 +31,51 @@ export function fetchSummary(prUrl: string): Promise<SummaryResponse> {
 export function fetchRisks(prUrl: string): Promise<RisksResponse> {
   return postReview<RisksResponse>("/review/risks", prUrl);
 }
+
+export interface StreamHandlers {
+  onStage?: (message: string) => void;
+  onSummaryDelta?: (text: string) => void;
+  onSummary?: (data: SummaryResponse) => void;
+  onRisks?: (data: RisksResponse) => void;
+  onError?: (message: string) => void;
+  onDone?: () => void;
+}
+
+/**
+ * 以 SSE 订阅 /review/stream：总结概述正文逐字到达（summary_delta），
+ * 总结完成后补结构化要点（summary），风险整块到达（risks）。
+ * 返回一个取消函数，调用后关闭连接（组件卸载或重新提交时清理）。
+ */
+export function streamReview(prUrl: string, handlers: StreamHandlers): () => void {
+  const url = `${API_BASE}/review/stream?pr_url=${encodeURIComponent(prUrl)}`;
+  const es = new EventSource(url);
+
+  es.addEventListener("stage", (e) => {
+    handlers.onStage?.(JSON.parse((e as MessageEvent).data).message ?? "");
+  });
+  es.addEventListener("summary_delta", (e) => {
+    handlers.onSummaryDelta?.(JSON.parse((e as MessageEvent).data).text ?? "");
+  });
+  es.addEventListener("summary", (e) => {
+    handlers.onSummary?.(JSON.parse((e as MessageEvent).data));
+  });
+  es.addEventListener("risks", (e) => {
+    handlers.onRisks?.(JSON.parse((e as MessageEvent).data));
+  });
+  es.addEventListener("error", (e) => {
+    // 后端主动发的 error 事件（带 data）与连接断开（无 data）都会到这里
+    const data = (e as MessageEvent).data;
+    if (data) {
+      handlers.onError?.(JSON.parse(data).message ?? "分析失败");
+    } else {
+      handlers.onError?.("连接中断，请重试");
+    }
+    es.close();
+  });
+  es.addEventListener("done", () => {
+    handlers.onDone?.();
+    es.close();
+  });
+
+  return () => es.close();
+}
