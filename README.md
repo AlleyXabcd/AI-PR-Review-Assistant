@@ -110,7 +110,7 @@ cd frontend && pnpm install && pnpm dev   # http://localhost:3000
 
 ## Demo 视频
 
-> 视频链接：**<待补充>**（上传至 bilibili / 云盘后替换此处）。
+> 视频链接：[https://www.bilibili.com/video/BV1gRV76iEL2](https://www.bilibili.com/video/BV1gRV76iEL2)
 
 视频覆盖以下核心模块的实际效果：
 
